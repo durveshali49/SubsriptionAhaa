@@ -1,6 +1,6 @@
 # Ahaa Kitchen Subscription Management
 
-Requirements and implementation plan for a private food credit application for [Ahaa Kitchen](https://ahaakitchen.com/).
+Requirements and implementation plan for a private food credit application for [Ahaa Kitchen](https://ahaakitchen.com/)
 
 **Status:** Documentation only. The record-keeping application and subdomain have not been built, and WhatsApp messaging has not been connected. No payment integration is planned.
 
