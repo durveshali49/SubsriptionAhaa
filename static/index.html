@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow">
+<title>Ahaa Kitchen · Food Credit</title><link rel="icon" href="/static/assets/logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Forum&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script>
+</head>
+<body>
+<div id="auth" class="auth-shell" hidden>
+ <div class="auth-brand"><span class="eyebrow">FRISCO, TEXAS</span><h1>Customer balances.<br>Made simple.</h1><span class="ornament">◇ ─── ◇</span><p>Record payments, food bills, and remaining balances in one place.</p><div class="auth-wordmark">ahaa <span>KITCHEN</span></div></div>
+ <div class="auth-form"><div class="small-brand"><img src="/static/assets/logo.png" alt="Ahaa Kitchen"></div><span class="eyebrow">PRIVATE OWNER ACCESS</span><h2 id="auth-title">Welcome back.</h2><p id="auth-copy">Sign in to manage your kitchen's food credit.</p><form id="login-form"><label>Email address<input name="email" type="email" autocomplete="username" required placeholder="you@ahaakitchen.com"></label><label>Password<input name="password" type="password" minlength="12" maxlength="200" autocomplete="current-password" required placeholder="At least 12 characters"></label><p id="auth-error" class="error" role="alert"></p><button class="btn primary full" id="auth-submit">Sign in <span>→</span></button></form><p class="footnote">Owner only · Your records stay private</p></div>
+</div>
+<div id="shell" class="shell" hidden>
+<aside class="sidebar"><a class="brand" href="#dashboard" aria-label="Ahaa Kitchen overview"><img src="/static/assets/logo.png" alt="Ahaa Kitchen"></a><div class="workspace-label">CUSTOMER BALANCES</div><nav aria-label="Main navigation"><a href="#dashboard" data-page="dashboard"><span aria-hidden="true">⌂</span> Home</a><a href="#customers" data-page="customers"><span aria-hidden="true">♧</span> Customers</a><a href="#transactions" data-page="transactions"><span aria-hidden="true">≡</span> History</a><a href="#settings" data-page="settings"><span aria-hidden="true">?</span> Help</a></nav><div class="sidebar-note"><span class="ornament">◇</span><strong>Your food plan.</strong><p>$200 received. $240 food balance.<br>The balance never expires.</p></div><div class="owner-card"><div class="avatar">AK</div><div><strong>Kitchen owner</strong><span>Private workspace</span></div><button id="logout" class="icon-button" title="Sign out" aria-label="Sign out">↗</button></div></aside>
+<div class="main-wrap"><header class="topbar"><div><span class="crumb">Ahaa Kitchen</span><span class="crumb-sep">/</span><span id="breadcrumb">Home</span></div><div class="topbar-right"><span id="today"></span><span class="private-pill">♙ Owner access</span><button class="mobile-logout icon-button" data-action="logout" aria-label="Sign out">↗</button></div></header><main id="main"></main><footer>AHAA KITCHEN <span>Payments and food records.</span><span>All amounts in USD</span></footer></div>
+</div>
+<dialog id="modal"><div class="modal-top"><span class="eyebrow" id="modal-kicker">AHAA KITCHEN</span><button class="icon-button" id="close-modal" aria-label="Close dialog">×</button></div><h2 id="modal-title"></h2><div id="modal-body"></div></dialog><div id="toast" role="status" hidden></div>
+</body></html>
