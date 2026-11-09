@@ -13,6 +13,24 @@ IDENTITY_TABLES = ('customers', 'grants', 'events', 'audit')
 WRITE_LOCK = 21731860721
 
 
+def connection_failure_reason(error):
+    # Driver errors can contain connection details. Log only fixed messages.
+    message = str(error).lower()
+    if 'certificate' in message or 'sslrootcert' in message:
+        return 'TLS certificate verification failed. Check the Render secret file and SUPABASE_SSL_ROOT_CERT.'
+    if error.sqlstate == '28P01' or 'password authentication failed' in message:
+        return 'Postgres rejected the password in SUPABASE_DATABASE_URL.'
+    if 'tenant or user not found' in message:
+        return 'The pooler rejected the tenant or username. Check the Session pooler URL in Supabase.'
+    if isinstance(error, psycopg.ProgrammingError):
+        return 'The database connection string or a connection option is invalid.'
+    if any(hint in message for hint in ('could not translate host', 'failed to resolve host', 'getaddrinfo')):
+        return 'The database hostname did not resolve. Check the Session pooler hostname in Supabase.'
+    if any(hint in message for hint in ('timeout', 'timed out', 'connection refused', 'unreachable')):
+        return 'The database host could not be reached. Check the pooler host, port and network access.'
+    return 'The driver did not identify a known cause. Check the pooler URL and Supabase database logs.'
+
+
 class PostgresConnection:
     def __init__(self, connection):
         self.connection = connection
@@ -30,8 +48,10 @@ def connect(path, url='', *, write=False, initialize_schema=False, uri=False):
                 url, row_factory=dict_row, connect_timeout=10,
                 sslmode='verify-full', sslrootcert=os.getenv('SUPABASE_SSL_ROOT_CERT') or 'system',
             )
-        except (psycopg.Error, ValueError):
-            raise RuntimeError('Supabase connection failed. Check the private connection URL, password and TLS certificate.') from None
+        except ValueError:
+            raise RuntimeError('Supabase connection failed. The database connection string is invalid.') from None
+        except psycopg.Error as error:
+            raise RuntimeError(f'Supabase connection failed. {connection_failure_reason(error)}') from None
         with connection:
             if write:
                 # Same serialization guarantee as SQLite BEGIN IMMEDIATE.
