@@ -1,5 +1,7 @@
+import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from app import main
@@ -8,6 +10,7 @@ H = {'X-Ahaa-Request': '1'}
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    monkeypatch.setenv('META_WHATSAPP_ENABLED', 'false')
     monkeypatch.setattr(main, 'DB', str(tmp_path / 'test.sqlite3'))
     monkeypatch.setattr(main, 'SUPABASE_DATABASE_URL', '')
     with TestClient(main.app) as c:
@@ -68,6 +71,39 @@ def test_fixed_amount_and_validation(client):
     assert order(client,cid,-1)[0].status_code==422
     assert order(client,cid,100,items=[{'name':' ', 'quantity':1,'price':100}])[0].status_code==422
     assert order(client,cid,100,items=[{'name':'Food', 'quantity':1.5,'price':100}])[0].status_code==422
+
+
+def test_order_whatsapp_submission_is_once_per_order_and_respects_consent(client, monkeypatch):
+    monkeypatch.setenv('META_WHATSAPP_ENABLED', 'true')
+    monkeypatch.setenv('META_GRAPH_API_VERSION', 'v25.0')
+    monkeypatch.setenv('META_WHATSAPP_PHONE_NUMBER_ID', '123')
+    monkeypatch.setenv('META_WHATSAPP_ACCESS_TOKEN', 'test-token')
+    monkeypatch.setenv('META_WHATSAPP_TEMPLATE_LANGUAGE', 'en')
+    submitted = []
+
+    def send(url, *, headers, json, timeout):
+        assert url == 'https://graph.facebook.com/v25.0/123/messages'
+        assert headers == {'Authorization': 'Bearer test-token'}
+        submitted.append(json)
+        return httpx.Response(200, request=httpx.Request('POST', url), json={'messages': [{'id': 'wamid.test'}]})
+
+    monkeypatch.setattr(main.whatsapp.httpx, 'post', send)
+    cid = create(client)
+    assert pay(client, cid)[0].status_code == 200
+    response, payload = order(client, cid, 4000)
+    assert response.status_code == 200
+    assert client.post('/api/orders', headers=H, json=payload).json()['id'] == response.json()['id']
+    assert len(submitted) == 2
+    assert submitted[1]['to'] == '12025550123'
+    assert submitted[1]['template']['name'] == 'ahaa_order_update'
+    parameters = submitted[1]['template']['components'][0]['parameters']
+    assert [item['text'] for item in parameters] == ['Test Customer', 'Biryani x 1', '$40.00', '$200.00']
+    assert client.get('/api/data').json()['events'][0]['whatsapp_status'] == 'submitted'
+    assert client.patch(f'/api/customers/{cid}', headers=H, json={
+        'name': 'Test Customer', 'email': 'test@example.com', 'phone': '+12025550123', 'consent': False,
+    }).status_code == 200
+    assert order(client, cid, 1000)[0].status_code == 200
+    assert len(submitted) == 2
 
 
 def test_refunds_are_manual_bounded_and_idempotent(client):

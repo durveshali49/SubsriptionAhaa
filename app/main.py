@@ -1,4 +1,5 @@
 """Ahaa Kitchen: owner-only prepaid credit records. No payment processing."""
+import asyncio
 import csv
 import hashlib
 import hmac
@@ -9,7 +10,7 @@ import re
 import secrets
 import sqlite3
 import time
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
@@ -17,8 +18,9 @@ from typing import Annotated
 from dotenv import load_dotenv
 from psycopg.errors import UniqueViolation
 
-from app.storage import connect, initialize
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from app import whatsapp
+from app.storage import connect, initialize, delete_legacy_receipts
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -31,6 +33,23 @@ DB = os.getenv('DATABASE_PATH', str(ROOT / 'data' / 'ahaa.sqlite3'))
 SUPABASE_DATABASE_URL = os.getenv('SUPABASE_DATABASE_URL', '')
 SECURE = os.getenv('COOKIE_SECURE', 'false').lower() == 'true'
 PHONE = re.compile(r'^\+[1-9]\d{7,14}$')
+
+
+def normalize_phone(value):
+    # US numbers can be entered without +1, e.g. 9258582516 or (925) 858-2516.
+    raw = value.strip()
+    digits = re.sub(r'\D', '', raw)
+    if raw.startswith('+'):
+        phone = '+' + digits
+    elif len(digits) == 10:
+        phone = '+1' + digits
+    elif len(digits) == 11 and digits.startswith('1'):
+        phone = '+' + digits
+    else:
+        phone = ''
+    if not PHONE.fullmatch(phone):
+        raise ValueError('Enter a 10-digit US phone number, or start with + and the country code.')
+    return phone
 
 
 def now():
@@ -88,9 +107,7 @@ class Customer(BaseModel):
     @field_validator('phone')
     @classmethod
     def phone_valid(cls, value):
-        if not PHONE.fullmatch(value):
-            raise ValueError('Use an international phone number, for example +19453575262.')
-        return value
+        return normalize_phone(value)
 
     @field_validator('name')
     @classmethod
@@ -142,6 +159,10 @@ class Refund(Mutation):
     reference: str = Field(default='', max_length=100)
 
 
+class Deletion(BaseModel):
+    confirm_name: str = Field(min_length=1, max_length=100)
+
+
 class Reversal(Mutation):
     order_id: StrictInt = Field(gt=0)
     reason: str = Field(min_length=3, max_length=500)
@@ -171,7 +192,7 @@ def previous(c, kind, body):
 
 
 def record(c, kind, body, grant_id, delta, cash, details, original=None):
-    cust = find_customer(c, body.customer_id)
+    find_customer(c, body.customer_id)
     stamp = now()
     after = balance(c, body.customer_id)
     eid = c.execute('INSERT INTO events(customer_id,grant_id,kind,cash,delta,balance,details,created,original_id) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id',
@@ -184,7 +205,14 @@ def record(c, kind, body, grant_id, delta, cash, details, original=None):
 @asynccontextmanager
 async def lifespan(app):
     init_db()
-    yield
+    worker = asyncio.create_task(whatsapp.recover_pending(database)) if whatsapp.configuration() else None
+    try:
+        yield
+    finally:
+        if worker:
+            worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker
 
 
 app = FastAPI(title='Ahaa Kitchen Credit Records', lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -193,7 +221,7 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=os.getenv('ALLOWED_HOSTS
 
 @app.middleware('http')
 async def protection(request, call_next):
-    if request.method in ('POST', 'PUT', 'PATCH', 'DELETE'):
+    if request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and request.url.path != '/api/webhooks/meta':
         if request.headers.get('X-Ahaa-Request') != '1' or request.headers.get('sec-fetch-site') == 'cross-site':
             return Response('Invalid request origin', status_code=403)
         origin = request.headers.get('origin')
@@ -217,6 +245,31 @@ async def invalid_request(request: Request, error: RequestValidationError):
         for issue in error.errors()
     ]
     return JSONResponse({'detail': details}, status_code=422)
+
+
+@app.get('/api/webhooks/meta')
+def verify_meta(request: Request):
+    expected = os.getenv('META_WHATSAPP_VERIFY_TOKEN', '')
+    supplied = request.query_params.get('hub.verify_token', '')
+    if (not expected or request.query_params.get('hub.mode') != 'subscribe'
+            or not secrets.compare_digest(expected, supplied)):
+        raise HTTPException(403, 'Verification failed')
+    return Response(request.query_params.get('hub.challenge', ''), media_type='text/plain')
+
+
+@app.post('/api/webhooks/meta')
+async def receive_meta(request: Request):
+    secret = os.getenv('META_APP_SECRET', '')
+    raw = await request.body()
+    signature = 'sha256=' + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+    if not secret or not secrets.compare_digest(signature, request.headers.get('X-Hub-Signature-256', '')):
+        raise HTTPException(403, 'Signature verification failed')
+    try:
+        payload = json.loads(raw)
+        whatsapp.receive(database, payload)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise HTTPException(400, 'Invalid webhook payload') from None
+    return {'received': True}
 
 
 @app.get('/')
@@ -288,7 +341,10 @@ def logout(request: Request, response: Response):
 def data(auth: Auth):
     with database() as c:
         customers = [dict(r) | {'balance': balance(c, r['id'])} for r in c.execute('SELECT * FROM customers ORDER BY lower(name), id')]
-        events = [dict(r) for r in c.execute('SELECT e.*,c.name FROM events e JOIN customers c ON c.id=e.customer_id ORDER BY e.id DESC')]
+        events = [dict(r) for r in c.execute(
+            'SELECT e.*,c.name,m.state AS whatsapp_status,m.error AS whatsapp_error,l.state AS low_balance_status,l.error AS low_balance_error '
+            'FROM events e JOIN customers c ON c.id=e.customer_id '
+            "LEFT JOIN meta_notifications m ON m.event_id=e.id AND m.kind=e.kind LEFT JOIN meta_notifications l ON l.event_id=e.id AND l.kind='low_balance' ORDER BY e.id DESC" )]
     for e in events:
         e['details'] = json.loads(e['details'])
     return {'customers': customers, 'events': events}
@@ -309,36 +365,75 @@ def create_customer(body: Customer, auth: Auth):
 def edit_customer(cid: int, body: Customer, auth: Auth):
     with database(True) as c:
         old = find_customer(c, cid)
+        consent = int(body.consent) if 'consent' in body.model_fields_set else int(old['consent'] and body.phone == old['phone'])
         try:
-            c.execute('UPDATE customers SET name=?,email=?,phone=?,consent=?,notes=? WHERE id=?', (body.name, body.email, body.phone, old['consent'], body.notes, cid))
+            c.execute('UPDATE customers SET name=?,email=?,phone=?,consent=?,notes=? WHERE id=?', (body.name, body.email, body.phone, consent, body.notes, cid))
         except (sqlite3.IntegrityError, UniqueViolation):
             raise HTTPException(409, 'This phone number is already registered.')
-        audit(c, 'customer_updated', {'customer_id': cid, 'before': dict(old), 'after': body.model_dump() | {'consent': bool(old['consent'])}})
+        audit(c, 'customer_updated', {'customer_id': cid, 'before': dict(old), 'after': body.model_dump() | {'consent': bool(consent)}})
     return {'ok': True}
 
 
+@app.delete('/api/customers/{cid}')
+def delete_customer(cid: int, body: Deletion, auth: Auth):
+    same = lambda value: ' '.join(value.split()).casefold()
+    with database(True) as c:
+        row = find_customer(c, cid)
+        if same(body.confirm_name) != same(row['name']):
+            raise HTTPException(400, 'Type the customer name exactly as shown to confirm.')
+        remaining = balance(c, cid)
+        if remaining:
+            raise HTTPException(409, f'This customer still has ${remaining/100:.2f} in food credit. Use it or record a refund before deleting.')
+        events = 'SELECT id FROM events WHERE customer_id=?'
+        count = c.execute('SELECT COUNT(*) AS n FROM events WHERE customer_id=?', (cid,)).fetchone()['n']
+        delete_legacy_receipts(c, cid)
+        c.execute(f'DELETE FROM meta_delivery_updates WHERE provider_id IN (SELECT provider_id FROM meta_notifications WHERE event_id IN ({events}))', (cid,))
+        c.execute(f'DELETE FROM meta_notifications WHERE event_id IN ({events})', (cid,))
+        c.execute(f'DELETE FROM requests WHERE event_id IN ({events})', (cid,))
+        # Refunds and reversals point at the customer's original records, so remove them first.
+        c.execute('DELETE FROM events WHERE customer_id=? AND original_id IS NOT NULL', (cid,))
+        c.execute('DELETE FROM events WHERE customer_id=?', (cid,))
+        c.execute('DELETE FROM grants WHERE customer_id=?', (cid,))
+        # Audit entries for this customer can hold their old contact details.
+        for entry in c.execute('SELECT id,details FROM audit').fetchall():
+            try:
+                details = json.loads(entry['details'])
+            except ValueError:
+                continue
+            if isinstance(details, dict) and details.get('customer_id') == cid:
+                c.execute('DELETE FROM audit WHERE id=?', (entry['id'],))
+        # A WhatsApp STOP choice is kept so a re-added number is never messaged against it.
+        c.execute('DELETE FROM customers WHERE id=?', (cid,))
+        audit(c, 'customer_deleted', {'records_deleted': count})
+    return {'ok': True, 'records_deleted': count}
+
+
 @app.post('/api/enrollments')
-def enroll(body: Payment, auth: Auth):
+def enroll(body: Payment, auth: Auth, background: BackgroundTasks):
     with database(True) as c:
         prior = previous(c, 'payment', body)
         if prior:
             return prior
-        find_customer(c, body.customer_id)
+        customer = find_customer(c, body.customer_id)
         if body.amount != 20000:
             raise HTTPException(400, 'This plan requires a recorded payment of exactly $200.00.')
         if balance(c, body.customer_id) != 0:
             raise HTTPException(409, 'Renewal is available after the existing balance reaches zero.')
         gid = c.execute('INSERT INTO grants(customer_id,remaining,created) VALUES(?,24000,?) RETURNING id', (body.customer_id, now())).fetchone()['id']
-        return record(c, 'payment', body, gid, 24000, 20000, {'method': body.method, 'reference': body.reference, 'bonus': 4000})
+        event = record(c, 'payment', body, gid, 24000, 20000, {'method': body.method, 'reference': body.reference, 'bonus': 4000})
+        queued = whatsapp.enqueue(c, event, customer, 'payment')
+    if queued:
+        background.add_task(whatsapp.process_event, database, event['id'])
+    return event
 
 
 @app.post('/api/orders')
-def order(body: Order, auth: Auth):
+def order(body: Order, auth: Auth, background: BackgroundTasks):
     with database(True) as c:
         prior = previous(c, 'order', body)
         if prior:
             return prior
-        find_customer(c, body.customer_id)
+        customer = find_customer(c, body.customer_id)
         total = sum(i.price * i.quantity for i in body.items)
         available = balance(c, body.customer_id)
         if total <= 0:
@@ -353,7 +448,13 @@ def order(body: Order, auth: Auth):
             remaining -= used
             if not remaining:
                 break
-        return record(c, 'order', body, None, -total, 0, {'items': [i.model_dump() for i in body.items], 'allocations': allocations})
+        event = record(c, 'order', body, None, -total, 0, {'items': [i.model_dump() for i in body.items], 'allocations': allocations})
+        queued = whatsapp.enqueue(c, event, customer, 'order')
+        if available > 2000 and event['balance'] <= 2000:
+            whatsapp.enqueue(c, event, customer, 'low_balance')
+    if queued:
+        background.add_task(whatsapp.process_event, database, event['id'])
+    return event
 
 
 @app.post('/api/refunds')

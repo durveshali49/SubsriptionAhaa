@@ -7,3 +7,8 @@ CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, customer_id INTEGER NO
 CREATE UNIQUE INDEX IF NOT EXISTS single_reversal ON events(original_id) WHERE kind='reversal';
 CREATE TABLE IF NOT EXISTS requests(key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, event_id INTEGER NOT NULL REFERENCES events);
 CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, action TEXT NOT NULL, details TEXT NOT NULL, created TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS meta_notifications(event_id INTEGER NOT NULL REFERENCES events(id), kind TEXT NOT NULL, phone TEXT NOT NULL, state TEXT NOT NULL, started REAL, provider_id TEXT, error TEXT, PRIMARY KEY(event_id,kind));
+CREATE INDEX IF NOT EXISTS meta_notifications_provider ON meta_notifications(provider_id);
+CREATE TABLE IF NOT EXISTS whatsapp_preferences(phone TEXT PRIMARY KEY, opted_out INTEGER NOT NULL, updated REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS meta_delivery_updates(provider_id TEXT PRIMARY KEY, state TEXT NOT NULL, error TEXT);

@@ -16,7 +16,39 @@ Open http://127.0.0.1:8000. A fresh database asks you to create the owner login.
 2. **Record payment** after receiving $200 to add $240 in food credit.
 3. **Record food** with the food names and final bill, including tax. The app shows the deduction and remaining balance before saving.
 
-The home screen includes customer search, recent receipts, and business-day totals in Frisco time. Open **History → Details** to see a payment, food bill, refund, or correction. Use **Customer details & refunds** for refunds. The previous WhatsApp implementation is commented in [app/whatsapp_paused.py](app/whatsapp_paused.py). This release records receipts in the app.
+The home screen includes customer search, recent receipts, and business-day totals in Frisco time. Open **History → Details** to see a payment, food bill, refund, or correction. Use **Customer details & refunds** for refunds.
+
+## Enable Meta WhatsApp notifications
+
+Use Meta Cloud API directly. Set these private server variables in the ignored local .env or Render Environment:
+
+- META_WHATSAPP_ENABLED=false (enable after templates and test recipient are ready)
+- META_GRAPH_API_VERSION=v25.0
+- META_WHATSAPP_PHONE_NUMBER_ID (production sender ID)
+- META_WHATSAPP_TEMPLATE_LANGUAGE=en
+- META_WHATSAPP_ACCESS_TOKEN
+- META_APP_SECRET (for webhook signatures)
+- META_WHATSAPP_VERIFY_TOKEN (random private verification token)
+
+The HTTPS callback is /api/webhooks/meta. Configure verification, subscribe to messages, and publish the Meta app as required for production callbacks.
+
+Approved templates in the production account must match these body parameters:
+
+| Template | Parameters in order |
+| --- | --- |
+| ahaa_payment_confirmation | customer name, payment amount, credit added, available credit |
+| ahaa_order_update | customer name, full food item list, order total, remaining credit |
+| ahaa_low_balance | customer name, remaining credit |
+
+Messages queue within the payment/order transaction. Repeated identical saves do not duplicate notifications. Low balance alerts occur when an order takes credit from above $20 to $20 or below. Credit above $20 enables the next crossing.
+
+Owner consent changes are recorded in the audit trail. Signed inbound STOP, STOPALL, UNSUBSCRIBE, CANCEL, END, QUIT, REVOKE, and OPT OUT disable notifications by phone and cancel queued messages. Resubscription after STOP requires operational review. START is not supported. An already in-flight message may complete after STOP.
+
+Record details displays payment/order message state. Low balance state is stored separately in meta_notifications. Webhooks record sent, delivered, read and failed. Submitted means accepted by Meta, not delivered.
+
+Ambiguous requests are marked for review rather than automatically resent. Item lists exceeding the conservative 700-character limit are also marked for review and retained in full in the application. Automatic long receipts require an approved document/media approach.
+
+Test payment, order, threshold alert, signed webhooks, and STOP with an owner-controlled opted-in phone before enabling production sending. No retention purge or customer deletion automation is implemented.
 
 ## Connect Supabase
 
