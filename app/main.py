@@ -272,6 +272,12 @@ async def receive_meta(request: Request):
     return {'received': True}
 
 
+@app.api_route('/api/health', methods=['GET', 'HEAD'])
+def health():
+    # Uptime monitors and Render health checks. No database or login needed.
+    return {'status': 'ok'}
+
+
 @app.get('/')
 def index():
     return FileResponse(ROOT / 'static' / 'index.html')

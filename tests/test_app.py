@@ -176,3 +176,10 @@ def test_login_rate_limit(client):
     for _ in range(8):
         assert client.post('/api/login',headers=H,json={'email':'owner@example.com','password':'wrong-password-long'}).status_code==401
     assert client.post('/api/login',headers=H,json={'email':'owner@example.com','password':'Secure-kitchen-2026'}).status_code==429
+
+
+def test_health_check_needs_no_login(client):
+    with TestClient(main.app) as outsider:
+        r = outsider.get('/api/health')
+        assert r.status_code == 200 and r.json() == {'status': 'ok'}
+        assert outsider.head('/api/health').status_code == 200
