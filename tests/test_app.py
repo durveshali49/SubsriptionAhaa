@@ -97,7 +97,7 @@ def test_order_whatsapp_submission_is_once_per_order_and_respects_consent(client
     assert submitted[1]['to'] == '12025550123'
     assert submitted[1]['template']['name'] == 'ahaa_order_update'
     parameters = submitted[1]['template']['components'][0]['parameters']
-    assert [item['text'] for item in parameters] == ['Test Customer', 'Biryani x 1', '$40.00', '$200.00']
+    assert [item['text'] for item in parameters] == ['Test Customer', 'Biryani', '$40.00', '$200.00']
     assert client.get('/api/data').json()['events'][0]['whatsapp_status'] == 'submitted'
     assert client.patch(f'/api/customers/{cid}', headers=H, json={
         'name': 'Test Customer', 'email': 'test@example.com', 'phone': '+12025550123', 'consent': False,

@@ -257,3 +257,13 @@ def test_same_number_with_and_without_plus_one_is_one_customer(client):
     add_customer(client)
     r = client.post('/api/customers', headers=H, json={'name': 'Again', 'email': 'a@example.com', 'phone': '2025550123', 'consent': True})
     assert r.status_code == 409
+
+
+def test_order_items_show_quantity_only_above_one(client):
+    cid = add_customer(client)
+    pay(client, cid)
+    r = client.post('/api/orders', headers=H, json={'key': str(uuid.uuid4()), 'customer_id': cid, 'items': [
+        {'name': 'Chicken Biriyani - 2', 'quantity': 1, 'price': 2700},
+        {'name': 'Naan', 'quantity': 3, 'price': 300}]})
+    assert r.status_code == 200, r.text
+    assert values(client.sent[-1])[1] == 'Chicken Biriyani - 2, Naan x 3'

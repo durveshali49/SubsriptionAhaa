@@ -58,7 +58,12 @@ def submit(job, config):
     else:
         template = 'ahaa_order_update'
         items = json.loads(job['details'])['items']
-        summary = ', '.join(f"{' '.join(item['name'].split())} x {item['quantity']}" for item in items)
+        # The owner usually types the full description, e.g. "Chicken Biryani - 2", so show
+        # the quantity only when it is more than one.
+        summary = ', '.join(
+            ' '.join(item['name'].split()) + (f" x {item['quantity']}" if item['quantity'] > 1 else '')
+            for item in items
+        )
         values = [name, summary, money(-job['delta']), money(job['balance'])]
         # Never truncate the customer's itemized receipt to fit a template.
         if len(summary) > 700:
